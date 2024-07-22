@@ -1,3 +1,9 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jul 22 12:18:39 2024
+
+@author: MJaenCortes
+"""
 import pandas as pd
 import re
 
@@ -86,20 +92,20 @@ def calculate_board_stats(df):
     
     with1to2billion_marketcap = df.loc[(pd.to_numeric(df['Market Cap'], errors='coerce').fillna(0, downcast='infer') <= 2000000000) 
                                        & (pd.to_numeric(df['Market Cap'], errors='coerce').fillna(0, downcast='infer') >= 1000000000)]
-    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with_less_than_1billion_marketcap'] = calculate_percentage(
+    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with_1to2billion_marketcap'] = calculate_percentage(
         pd.to_numeric(with1to2billion_marketcap["Q.19.1"], errors='coerce').fillna(0, downcast='infer').sum(),
         pd.to_numeric(with1to2billion_marketcap["Q.19.3"], errors='coerce').fillna(0, downcast='infer').sum()
     )
     
     with2to10billion_marketcap = df.loc[(pd.to_numeric(df['Market Cap'], errors='coerce').fillna(0, downcast='infer') <= 10000000000) 
                                        & (pd.to_numeric(df['Market Cap'], errors='coerce').fillna(0, downcast='infer') >= 2000000000)]
-    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with_less_than_1billion_marketcap'] = calculate_percentage(
+    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with_2to10billion_marketcap'] = calculate_percentage(
         pd.to_numeric(with2to10billion_marketcap["Q.19.1"], errors='coerce').fillna(0, downcast='infer').sum(),
         pd.to_numeric(with2to10billion_marketcap["Q.19.3"], errors='coerce').fillna(0, downcast='infer').sum()
     )
     
     with10_or_morebillion_marketcap = df.loc[(pd.to_numeric(df['Market Cap'], errors='coerce').fillna(0, downcast='infer') > 10000000000)]
-    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with_less_than_1billion_marketcap'] = calculate_percentage(
+    stats['percentage_of_board_seats_occupied_by_women_for_issuers_with10_or_morebillion_marketcap'] = calculate_percentage(
         pd.to_numeric(with10_or_morebillion_marketcap["Q.19.1"], errors='coerce').fillna(0, downcast='infer').sum(),
         pd.to_numeric(with10_or_morebillion_marketcap["Q.19.3"], errors='coerce').fillna(0, downcast='infer').sum()
     )
@@ -151,10 +157,6 @@ def calculate_policy_stats(df):
         df.shape[0]
     )
     
-    stats['percentage_of_issuer_targets_exec'] = calculate_percentage(
-        df.loc[(df["Q.15.1"] == "Women in executive officer positions target adopted")].shape[0],
-        df.shape[0]
-    )
     
     stats['percentage_of_issuer_targets_exec'] = calculate_percentage(
         df.loc[(df["Q.15.1"] == "Women in executive officer positions target adopted")].shape[0],
@@ -216,9 +218,10 @@ def calculate_policy_stats(df):
     )
     
     stats['percentage_of_issuers_with_policy_board_seats_women'] = calculate_percentage(
-        pd.to_numeric(df["Q.19.1"], errors='coerce').fillna(0, downcast='infer').sum(),
-        pd.to_numeric(df["Q.19.3"], errors='coerce').fillna(0, downcast='infer').sum()
+        pd.to_numeric(df.loc[(df["Q.12.1"].isin(["Issuer has a written policy", "Policy exists but unwritten or unclear if written"]))]["Q.19.1"], errors='coerce').fillna(0, downcast='infer').sum(),
+        pd.to_numeric(df.loc[(df["Q.12.1"].isin(["Issuer has a written policy", "Policy exists but unwritten or unclear if written"]))]["Q.19.3"], errors='coerce').fillna(0, downcast='infer').sum()
     )
+   
     
     stats['filled_vacated_board_seats'] = calculate_percentage(
         pd.to_numeric(df["Q.26.2"], errors='coerce').fillna(0, downcast='infer').sum()+ 
