@@ -1,3 +1,154 @@
+import pandas as pd
+import numpy as np
+import re
+
+
+def load_and_preprocess_data(file_path, sheet_name):
+    # Load the raw data
+    raw_data = pd.read_excel(file_path, sheet_name=sheet_name)
+    
+    # Function to process each column name
+    def process_column_names(columns):
+        new_columns = []
+        prev_num = None
+        prev_subnum = 0
+        
+        for col in columns:
+            # Check if the column starts with a number
+            match = re.match(r'^(\d+)(\.\d+)?', col)
+            if match:
+                num = match.group(1)
+                if num != prev_num:
+                    prev_subnum = 0
+                
+                if match.group(2):  # If there's a subnum like .1, .2, etc.
+                    subnum = match.group(2)[1:]  # Remove the leading dot
+                    new_col = f'Q.{num}.{subnum}'
+                    prev_subnum = int(subnum)
+                else:
+                    prev_subnum += 1
+                    new_col = f'Q.{num}.{prev_subnum}'
+                
+                prev_num = num
+            else:
+                # Keep the original name for columns without leading numbers
+                new_col = col
+            
+            new_columns.append(new_col)
+        
+        return new_columns
+
+    # Apply the processing to all column names
+    new_columns = process_column_names(raw_data.columns)
+    
+    # Set the new column names
+    raw_data.columns = new_columns
+
+    return raw_data
+  
+def calculate_percentage(numerator, denominator):
+    return numerator / denominator if denominator != 0 else 0
+
+def calculate_board_stats(df):
+    stats = {}
+    
+    stats['percentage_of_board_seats_held_by_women'] = calculate_percentage(
+        sum(pd.to_numeric(df["Q.19.1"], errors='coerce').fillna(0)),
+        sum(pd.to_numeric(df["Q.19.3"], errors='coerce').fillna(0))
+    )
+    
+    stats['percentage_of_issuers_had_at_least_one_woman_on_their_board'] = calculate_percentage(
+        (pd.to_numeric(df["Q.19.1"], errors='coerce').fillna(0) > 0).sum(),
+        df['Participant No.'].count()
+    )
+    
+    stats['percentage_of_current_chairs_of_board_were_women'] = calculate_percentage(
+        df["Q.20.1"].value_counts().get(0, 0),
+        df['Participant No.'].count()
+    )
+    
+    # Add more calculations here...
+    
+    return stats
+
+def calculate_executive_stats(df):
+    stats = {}
+    
+    stats['percentage_of_issuers_with_woman_ceo'] = calculate_percentage(
+        df.loc[df["Q.21.1"] == "Y"].shape[0],
+        df.shape[0]
+    )
+    
+    stats['percentage_of_issuers_with_woman_cfo'] = calculate_percentage(
+        df.loc[df["Q.22.1"] == "Y"].shape[0],
+        df.shape[0]
+    )
+    
+    # Add more calculations here...
+    
+    return stats
+
+def calculate_policy_stats(df):
+    stats = {}
+    
+    stats['percentage_of_issuer_policy_board_women'] = calculate_percentage(
+        df.loc[(df["Q.12.1"].isin(["Issuer has a written policy", "Policy exists but unwritten or unclear if written"]))].shape[0],
+        df.shape[0]
+    )
+    
+    # Add more calculations here...
+    
+    return stats
+
+def calculate_industry_stats(df):
+    industries = ['Mining', 'Oil & Gas', 'Financial Services', 'Technology', 'Real estate', 
+                  'Retail', 'Manufacturing', 'Utilities', 'Biotechnology', 'Other']
+    
+    stats = {industry: {} for industry in industries}
+    
+    for industry in industries:
+        industry_df = df[df["Q.5.1"] == industry]
+        
+        stats[industry]['percentage_of_Issuers_with_at_least_one_woman_exec'] = calculate_percentage(
+            (pd.to_numeric(industry_df["Q.24.1"], errors='coerce').fillna(0) > 0).sum(),
+            industry_df.shape[0]
+        )
+        
+        stats[industry]['percentage_of_Issuers_with_at_least_one_woman_board'] = calculate_percentage(
+            (pd.to_numeric(industry_df["Q.19.1"], errors='coerce').fillna(0) > 0).sum(),
+            industry_df['Participant No.'].count()
+        )
+        
+        # Add more industry-specific calculations here...
+    
+    return stats
+
+def main(file_path, sheet_name):
+    df = load_and_preprocess_data(file_path, sheet_name)
+    
+    results = {}
+    results.update(calculate_board_stats(df))
+    results.update(calculate_executive_stats(df))
+    results.update(calculate_policy_stats(df))
+    results['industry_stats'] = calculate_industry_stats(df)
+    
+    return results
+
+if __name__ == "__main__":
+    file_path = "path_to_your_excel_file.xlsx"
+    sheet_name = "20234244881256"
+    results = main(file_path, sheet_name)
+    
+    # Print or process the results as needed
+    for key, value in results.items():
+        print(f"{key}: {value}")
+
+
+
+
+
+
+
 # -*- coding: utf-8 -*-
 """
 Created on Tue Aug  1 14:54:48 2023
