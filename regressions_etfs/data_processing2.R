@@ -1,3 +1,103 @@
+
+library(tidyverse)
+library(fuzzyjoin)
+library(RecordLinkage)
+library(zoo)
+
+# Helper functions
+read_csv_file <- function(file_path) {
+  read.csv(file_path, stringsAsFactors = FALSE)
+}
+
+clean_string <- function(x) {
+  gsub("[[:space:]]", "", x)
+}
+
+fuzzy_join_cusip <- function(df1, df2) {
+  stringdist_inner_join(df1, df2, by = 'fund.cusip') %>%
+    mutate(distance = 1 - levenshteinSim(fund.cusip.x, fund.cusip.y)) %>%
+    arrange(distance)
+}
+
+process_fuzzy_join <- function(joined_df) {
+  joined_df %>%
+    filter(distance == 0) %>%
+    select(RIC, sym, listing_mkt, fund.cusip.y, fund.name.x, year, nrd.number, 
+           fund.manager, fund.category, fund.class, fund.type, strategy, 
+           authorized.participants, designated.broker, prime.broker, distance) %>%
+    rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>%
+    distinct()
+}
+
+# Main data processing pipeline
+main_pipeline <- function(file1, file2, file3) {
+  # Read and preprocess IFS data
+  ifs_etf <- read_csv_file(file1) %>%
+    filter(grepl('etf|mutual|money', fund.type, ignore.case = TRUE),
+           !grepl('no etf', designated.broker, ignore.case = TRUE)) %>%
+    distinct()
+  
+  map_etfs <- read_csv_file(file2)
+  
+  # Process IFS data with CUSIPs
+  ifs_etf_w_cusips <- ifs_etf %>%
+    drop_na(fund.cusip) %>%
+    mutate(fund.cusip = strsplit(as.character(fund.cusip), ",")) %>%
+    unnest(fund.cusip) %>%
+    distinct()
+  
+  # Fuzzy join based on CUSIP
+  fuzzy_join_result <- fuzzy_join_cusip(ifs_etf_w_cusips, map_etfs)
+  perfect_fuzzy_join <- process_fuzzy_join(fuzzy_join_result)
+  
+  # Process remaining data
+  map_etfs <- map_etfs %>% anti_join(perfect_fuzzy_join, by = c("RIC", "sym", "listing_mkt", "fund.cusip"))
+  remaining_ifs_etf <- anti_join(ifs_etf_w_cusips, perfect_fuzzy_join, 
+                                 by = c('fund.cusip', 'nrd.number', 'fund.name', 'fund.manager'))
+  
+  # Clean CUSIP data
+  remaining_ifs_etf$fund.cusip <- clean_string(remaining_ifs_etf$fund.cusip)
+  map_etfs$fund.cusip <- clean_string(map_etfs$fund.cusip)
+  
+  # Repeat fuzzy join process for remaining data
+  remaining_fuzzy_join <- fuzzy_join_cusip(remaining_ifs_etf, map_etfs)
+  perfect_remaining_fuzzy_join <- process_fuzzy_join(remaining_fuzzy_join)
+  
+  perfect_fuzzy_join <- bind_rows(perfect_fuzzy_join, perfect_remaining_fuzzy_join) %>% distinct()
+  
+  # Process manual input CUSIP data
+  manual_input_ifs_cusips <- read_csv_file(file3) %>%
+    mutate(fund.cusip = clean_string(fund.cusip))
+  
+  manual_fuzzy_join <- fuzzy_join_cusip(manual_input_ifs_cusips, map_etfs) %>%
+    filter(distance == 0) %>%
+    distinct() %>%
+    rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>%
+    select(RIC, sym, listing_mkt, fund.cusip, fund.name, distance)
+  
+  manual_fuzzy_join <- merge(manual_fuzzy_join, ifs_etf, by = 'fund.name') %>%
+    select(RIC, sym, listing_mkt, fund.cusip.x, fund.name, year, nrd.number, 
+           fund.manager, fund.category, fund.class, fund.type, strategy, 
+           authorized.participants, designated.broker, prime.broker, distance) %>%
+    rename(fund.cusip = fund.cusip.x) %>%
+    filter(distance == 0) %>%
+    distinct()
+  
+  perfect_fuzzy_join <- bind_rows(perfect_fuzzy_join, manual_fuzzy_join) %>% distinct()
+  
+  # Final processing
+  perfect_fuzzy_join <- perfect_fuzzy_join %>%
+    mutate(number_of_ap = str_count(authorized.participants, ",") + 
+             str_count(authorized.participants, " and ") + 1)
+  
+  perfect_fuzzy_join
+}
+
+# Execute main pipeline
+result <- main_pipeline(file1, file2, file3)
+
+# Further processing (map, refinitiv, bloomberg) can be added here in a similar functional style
+
 ########################################
 ## CSA ETF Research
 ########################################
