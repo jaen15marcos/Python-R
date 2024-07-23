@@ -1,4 +1,276 @@
 
+# Load required libraries
+pacman::p_load(dplyr, janitor, tidyr, tidyverse, fuzzyjoin, stringr, zoo, data.table, 
+               fastDummies, corrr, arm, mclust, lmtest, leaps, fmsb, plm, broom, 
+               knitr, performance, datawizard, lfe, lme4, parameters, MuMIn)
+
+# Read data
+read_data <- function(file_path) {
+  fread(file_path, encoding = "UTF-8")
+}
+
+# Filter data
+filtered_data <- function(data, multi_series, currency, mkt.cap.cutoff) {
+  data %>%
+    mutate(
+      Net.Asset.Value = as.numeric(Net.Asset.Value),
+      fundata_nav = coalesce(fundata_nav, Net.Asset.Value),
+      mt = coalesce(mt, closing_price),
+      closing_price = coalesce(closing_price, mt),
+      issue.default.shares.outstanding = Outstanding.Shares.refinitiv
+    ) %>%
+    drop_na(pqs) %>%
+    filter(
+      year != 2023,
+      as.Date(date) >= as.Date('2019-06-30'),
+      !as.character(date) %in% c('2022-07-15', '2022-04-07', '2021-11-12', '2022-04-08', '2020-02-27', '2020-07-27', '2022-08-23'),
+      id == "Cont.Trading"
+    ) %>%
+    distinct(sym, listing_mkt, FundId, ISIN, date, .keep_all = TRUE) %>%
+    {if(currency == 'CAD') filter(., !Currency == "US Dollar") else filter(., Currency == "US Dollar")} %>%
+    {if(multi_series == 'N') 
+      group_by(., sym, listing_mkt, FundId) %>%
+        mutate(
+          dummy.date = as.Date(dmy('31122022')),
+          age = as.double(difftime(dummy.date, `Inception Date`, units = "days"))
+        ) %>%
+        filter(!is.na(age), age >= 365) %>%
+        slice_max(age) %>%
+        ungroup() %>%
+        select(-dummy.date, -age)
+      else 
+        group_by(., sym, listing_mkt, FundId) %>%
+        filter(n_distinct(sym) > 1) %>%
+        ungroup()
+    } %>%
+    group_by(sym, listing_mkt, FundId, year) %>%
+    arrange(date) %>%
+    mutate(Issue.Market.Cap = last(Issue.Market.Cap.refinitiv)) %>%
+    filter(Issue.Market.Cap >= mkt.cap.cutoff) %>%
+    ungroup() %>%
+    distinct(sym, listing_mkt, FundId)
+}
+
+# Control variables
+control_variables <- function(df) {
+  daily_controls <- df %>%
+    mutate(
+      turnover = total_volume / issue.default.shares.outstanding,
+      number_of_trades = log(number_of_trades),
+      per_short_volume = short_volume / total_volume,
+      avg_value = log(avg_value),
+      hhi_volume = log(hhi_volume)
+    ) %>%
+    select(sym, listing_mkt, FundId, date, year, avg_value, hhi_volume, 
+           volatility_cv, turnover, number_of_trades, per_short_volume) %>%
+    filter(year != 2019)
+  
+  yearly_controls <- df %>%
+    group_by(sym, listing_mkt, FundId, year) %>%
+    filter(!`Inception Date` %in% "" | !is.na(`Inception Date`)) %>%
+    mutate(
+      dummy.date = as.Date(paste0(year, "-12-31")),
+      age = log(as.double(difftime(dummy.date, `Inception Date`, units = "days"))),
+      size = log(last(Issue.Market.Cap.refinitiv)),
+      MER = last(MER)
+    ) %>%
+    ungroup() %>%
+    select(-dummy.date)
+  
+  ADV <- yearly_controls %>%
+    group_by(sym, listing_mkt, FundId, year) %>%
+    summarise(ADV = log(mean(total_volume, na.rm = TRUE)), .groups = "drop") %>%
+    mutate(year = as.integer(year) + 1)
+  
+  yearly_controls %>%
+    select(sym, listing_mkt, FundId, date, year, MER, size, age) %>%
+    mutate(year = as.integer(year) + 1) %>%
+    left_join(ADV, by = c('sym', 'listing_mkt', 'FundId', 'year')) %>%
+    distinct() %>%
+    filter(year != 2023, year != 2024) %>%
+    drop_na() %>%
+    left_join(daily_controls, by = c('sym', 'listing_mkt', 'FundId', 'year')) %>%
+    distinct()
+}
+
+# Market controls
+market_controls <- function() {
+  read_and_process <- function(file, cols, date_format = "%Y-%m-%d") {
+    fread(file) %>%
+      select(all_of(cols)) %>%
+      mutate(date = as.Date(date, format = date_format)) %>%
+      filter(between(date, as.Date('2019-01-01'), as.Date('2022-12-31')))
+  }
+  
+  vix <- read_and_process('path/to/VIX.csv', c("CLOSE", "DATE"), "%m/%d/%Y") %>%
+    rename(vix = CLOSE)
+  
+  corra <- read_and_process('path/to/CORRA.CSV', c("AVG.INTWO", "date")) %>%
+    rename(d.corra = AVG.INTWO)
+  
+  treasury_yields <- read_and_process('path/to/Daily_Treasury_yield_spread.csv', 
+                                      c("Date", "10.year.yield", "1.year.yield")) %>%
+    filter(`10.year.yield` != "Bank holiday") %>%
+    mutate(d.treasury_yield_spread = as.double(`10.year.yield`) - as.double(`1.year.yield`)) %>%
+    select(date, d.treasury_yield_spread)
+  
+  tsx_index <- read_and_process('path/to/tsx_index.csv', c("date", "Open", "Adj.Close")) %>%
+    mutate(tsx_return = (Adj.Close / Open) - 1) %>%
+    select(date, tsx_return)
+  
+  move <- read_and_process('path/to/MOVE.csv', c("Date", "Adj Close")) %>%
+    rename(Adj.Close = `Adj Close`)
+  
+  Reduce(function(...) merge(..., by = 'date', all = TRUE),
+         list(treasury_yields, corra, vix, tsx_index, move)) %>%
+    mutate(move_by_vix = as.numeric(Adj.Close) / vix) %>%
+    select(-Adj.Close)
+}
+
+# Final dataset
+final_dataset <- function() {
+  df <- filtered_data(read_data('path/to/full.data.final.csv'), 'N', 'CAD', 10000000)
+  fund_controls <- control_variables(df)
+  mkt_controls <- market_controls()
+  
+  df %>%
+    select(sym, listing_mkt, FundId, ISIN, date, year, pqs, pes_k, total_depth, 
+           prs_k_1m:ppi_k_15m, mt, Net.Asset.Value, fundata_nav, CIFSC.CATEGORY, 
+           number_of_ap.ifs, issue.default.shares.outstanding, closing_price, 
+           daily.disclosure.ifs) %>%
+    group_by(sym, listing_mkt) %>%
+    arrange(date) %>%
+    mutate(
+      total_depth = log(total_depth),
+      prem.disc.nav = ifelse((abs(mt-fundata_nav) < 1.35*abs(closing_price-fundata_nav)),
+                             (mt/fundata_nav) - 1, (closing_price/fundata_nav) - 1),
+      f.DoD.Outstanding.Shares = lead(issue.default.shares.outstanding, 1) / 
+        issue.default.shares.outstanding - 1
+    ) %>%
+    select(-Net.Asset.Value, -mt, -closing_price, -fundata_nav) %>%
+    ungroup() %>%
+    left_join(fund_controls, by = c("sym", "listing_mkt", "FundId", "year", "date")) %>%
+    left_join(mkt_controls, by = "date") %>%
+    distinct()
+}
+
+# Other helper functions
+QR_decomposition <- function(df) {
+  X <- as.matrix(df)
+  qr.X <- qr(X, tol = 1e-9, LAPACK = FALSE)
+  keep <- qr.X$pivot[seq_len(qr.X$rank)]
+  as.data.frame(X[, keep])
+}
+
+model_selection <- function(f, data) {
+  step(lm(f, data = data), direction = "both")
+}
+
+vif_func <- function(in_frame, thresh = 10, trace = TRUE, ...) {
+  # ... (rest of the function remains the same)
+}
+
+remove_outliers <- function(df, std.away = 7) {
+  df %>%
+    select(where(is.numeric)) %>%
+    mutate(across(-1, ~replace(., abs(scale(.)) > std.away, NA)))
+}
+
+pairwise_corr <- function(df) {
+  df %>%
+    select(where(is.numeric)) %>%
+    cor() %>%
+    as.data.frame() %>%
+    mutate(var1 = rownames(.)) %>%
+    pivot_longer(-var1, names_to = "var2", values_to = "value") %>%
+    arrange(desc(value)) %>%
+    group_by(value) %>%
+    filter(row_number() == 1, value > 0.7, var1 != var2)
+}
+
+consecutive_deviations_from_nav <- function(data, refinitiv.data, output) {
+  calc_prem_disc_nav <- if(refinitiv.data == "Y") {
+    function(df) {
+      df %>%
+        mutate(
+          a = ((coalesce(mt, closing_price) / coalesce(fundata_nav, Net.Asset.Value.refinitiv)) - 1) * 10000,
+          b = ((coalesce(mt, closing_price) / coalesce(Net.Asset.Value.refinitiv, fundata_nav)) - 1) * 10000,
+          prem.disc.nav = if_else(abs(a) >= abs(b), b, a)
+        ) %>%
+        select(-a, -b)
+    }
+  } else {
+    function(df) {
+      df %>%
+        mutate(prem.disc.nav = ((coalesce(mt, closing_price) / fundata_nav) - 1) * 10000)
+    }
+  }
+  
+  df1 <- data %>%
+    calc_prem_disc_nav() %>%
+    distinct(sym, listing_mkt, date, year, prem.disc.nav) %>%
+    drop_na()
+  
+  summary_raw <- df1 %>%
+    group_by(sym) %>%
+    summarise(
+      sd1plus = mean(prem.disc.nav) + sd(prem.disc.nav),
+      sd2plus = mean(prem.disc.nav) + sd(prem.disc.nav) * 2,
+      sd1minus = mean(prem.disc.nav) - sd(prem.disc.nav),
+      sd2minus = mean(prem.disc.nav) - sd(prem.disc.nav) * 2,
+      times_traded = n()
+    ) %>%
+    ungroup()
+  
+  summary_long <- df1 %>%
+    left_join(summary_raw, by = 'sym') %>%
+    distinct() %>%
+    arrange(date) %>%
+    mutate(id = as.numeric(factor(date)))
+  
+  filter_consecutive <- function(df, condition) {
+    df %>%
+      filter(condition) %>%
+      group_by(sym) %>%
+      arrange(date) %>%
+      filter(with(rle((diff(id) == 1)), sum(lengths[values] >= 7)) >= 1) %>%
+      mutate(consecutive = cumsum(c(1, diff(id) != 1))) %>%
+      ungroup() %>%
+      group_by(sym, consecutive) %>%
+      filter(n() >= 7) %>%
+      ungroup()
+  }
+  
+  if(output == "sd") {
+    filter_consecutive(summary_long, prem.disc.nav > sd2plus | prem.disc.nav < sd2minus)
+  } else {
+    filter_consecutive(summary_long, prem.disc.nav >= 200 | prem.disc.nav <= -200)
+  }
+}
+
+# Main execution
+data <- read_data('path/to/full.data.final.csv')
+df <- final_dataset() %>% 
+  drop_na(vix) %>%
+  group_by(FundId, year) %>%
+  filter(str_length(sym) == min(str_length(sym))) %>%
+  filter(!all(is.na(.))) %>%
+  ungroup() %>%
+  group_by(FundId, year, sym) %>%
+  mutate(pqs_sum = sum(pqs, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(FundId, year) %>%
+  filter(pqs_sum == min(pqs_sum)) %>%
+  ungroup() %>%
+  select(-str_len, -pqs_sum) %>%
+  filter((!number_of_ap.ifs %in% "" | !is.na(number_of_ap.ifs)),
+         daily.disclosure.ifs %in% c('Yes', 'No')) %>%
+  distinct()
+
+# Additional analysis and model fitting can be added here
+
+
+
 ####################################
 # Helper Functions 
 ##################################
