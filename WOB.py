@@ -272,9 +272,7 @@ def main(file_path, sheet_name):
     
     return results
 
-if __name__ == "__main__":
-    file_path = "T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\Research and Analysis Advisory -Operational\\Corporate Finance\\Women on Boards\\Year 8 Export (FINAL) - FA - Edited.xlsx"
-    sheet_name = "2022473846982"
+if __name__ == "__main__": 
     results = main(file_path, sheet_name)
     
     # Print or process the results as needed
