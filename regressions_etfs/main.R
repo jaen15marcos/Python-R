@@ -1,11 +1,11 @@
-# Main Script for ETF Research Project
+# Main Script
 
 # Load necessary libraries
 library(tidyverse)
 library(data.table)
 
 # Set working directory if needed
-# setwd("/path/to/your/project/directory")
+#setwd("Code\\pipeline - Marcos\\")
 
 # Function to log messages with timestamps
 log_message <- function(message) {
@@ -15,8 +15,13 @@ log_message <- function(message) {
 
 # Execute data collection script
 log_message("Starting data collection...")
-source("data_collection.R")
+source("data_collection_joinkey.R")
 log_message("Data collection completed.")
+
+# Execute data collection script
+#log_message("Starting data collection...")
+#source("data_collection_raw.R")
+#log_message("Data collection completed.")
 
 # Execute data processing script
 log_message("Starting data processing...")
@@ -32,5 +37,5 @@ log_message("Model fitting completed.")
 log_message("All scripts executed successfully. Project pipeline complete.")
 
 # Optional: Save the workspace
-save.image("ETF_research_workspace.RData")
-log_message("Workspace saved.")
+#save.image("ETF_research_workspace.RData")
+#log_message("Workspace saved.")
