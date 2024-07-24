@@ -25,6 +25,13 @@ read_data <- function(file_path) {
   fread(file_path, encoding = "UTF-8")
 }
 
+# Function to log messages with timestamps
+log_message <- function(message) {
+  timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  cat(paste0("[", timestamp, "] ", message, "\n"))
+}
+
+
 # Filter data
 filtered_data <- function(data, multi_series, currency, mkt.cap.cutoff) {
   data %>%
@@ -145,12 +152,12 @@ market_controls <- function() {
 # Final dataset for Regression
 final_dataset <- function() {
   etfs <- filtered_data(read_data(file_paths$full_data), 'N', 'CAD', 10000000)
-  print('***Task completed: Get List of ETFs***')
+  log_message('***Task completed: Get List of ETFs***')
   df <- read_data(file_paths$full_data) %>% merge(., etfs, by=c('sym', 'listing_mkt', 'FundId'))
   fund_controls <- control_variables(df) %>% mutate(date = as.Date(date)) 
-  print('***Task completed: Get Fund Controls***')
+  log_message('***Task completed: Get Fund Controls***')
   mkt_controls <- market_controls() 
-  print('***Task completed: Get Market Controls***')
+  log_message('***Task completed: Get Market Controls***')
   df %>% mutate(date = as.Date(date)) %>%
     dplyr::select(sym, listing_mkt, FundId, ISIN, date, year, pqs, pes_k, total_depth, 
            prs_k_1m:ppi_k_15m, mt, Net.Asset.Value.refinitiv, fundata_nav, CIFSC.CATEGORY, 
@@ -174,7 +181,6 @@ final_dataset <- function() {
 
 
 # Main execution
-print('***starting data processing***')
 df <- final_dataset() %>% 
   drop_na(vix) %>%
   group_by(FundId, year) %>%
@@ -189,7 +195,6 @@ df <- final_dataset() %>%
   ungroup() %>% dplyr::select(-pqs_sum) %>%
   filter((!number_of_ap.ifs %in% "" | !is.na(number_of_ap.ifs)),
          daily.disclosure.ifs %in% c('Yes', 'No')) %>% distinct() %>% drop_na() 
-print("***Task Completed: Data Processing***") 
 print(df)
 
 #######HELPER FUNCTIONS for Data Inspection & Model Selection
