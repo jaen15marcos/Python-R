@@ -2,7 +2,7 @@
 ## CSA ETF Research
 ########################################
 #
-# FUNCTIONS JOINS FILE
+# FUNCTIONS JOINS FILE (USING JOIN KEY)
 #
 # Author: Marcos Jaen Cortes, Regulatory Strategy and Research
 # Created August 2023
@@ -20,259 +20,190 @@ library(tidyverse)
 library(fuzzyjoin)
 library(stringr)
 library(zoo)
+library(data.table)
+library(qdap)
 
-#Takes raw IFS data and extracts ETF data 
-file1 <- 'T://Strategy_Operations//Economics Analysis//Data Sources folder mirrored on OSCER//Research and Analysis Policy Projects//CSA ETF Research//IFS//ifs.csv'
 
-file2 <- 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\trading_etfs.csv'
+ifs.file <- 'T://Strategy_Operations//Economics Analysis//Data Sources folder mirrored on OSCER//Research and Analysis Policy Projects//CSA ETF Research//IFS//ifs.csv'
 
-file3 <- 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\IFS\\ifs_clean_cusips.csv'
+map.file <- 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\map.csv'
 
-ifs.etf <- read.csv(file1) %>% filter(grepl('etf|mutual|money', fund.type, 
-                                            ignore.case = T), year == 2022) %>% filter(!grepl('no etf', designated.broker, ignore.case = T)) %>% distinct() 
+file.join.key <- 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\join.key.csv'
 
-map.etfs <- read.csv(file2)
 
-ifs.etf.w.cusips <- ifs.etf %>% drop_na(fund.cusip) %>% mutate(fund.cusip = strsplit(as.character(fund.cusip), ",")) %>% 
-  unnest(fund.cusip) %>% distinct() 
+map <- fread(map.file) 
+#map <- map[,-c(40:144)] 
 
-fuzzy.join.ifs.etf.w.cusips <- stringdist_inner_join(ifs.etf.w.cusips, map.etfs, by = 'fund.cusip') %>%
-  mutate(distance = 1 - RecordLinkage::levenshteinSim(fund.cusip.x, fund.cusip.y))  %>%
-  arrange(distance) 
 
-perfect.fuzzy.join.ifs.etf.w.cusips <- fuzzy.join.ifs.etf.w.cusips %>% filter(distance == 0) %>% 
-  select(RIC, sym, listing_mkt, fund.cusip.y, fund.name.x, year, nrd.number, fund.manager, fund.category, fund.class, 
-         fund.type, strategy, authorized.participants, designated.broker, prime.broker, distance) %>% 
-  rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>% distinct()
+map <- map %>% distinct(sym, listing_mkt, date, cusip, .keep_all = T) %>% group_by(sym, listing_mkt)  %>% arrange(date) %>% mutate(cusip = ifelse(cusip %in% "", tail(cusip, 1), cusip)) %>% filter(!cusip %in% "")
 
-map.etfs <- map.etfs %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                   by=c("RIC", "sym", "listing_mkt", "fund.cusip"))
+join.key <- fread(file.join.key)
+map.join.key <- merge(map, join.key, by.x = c("sym", "listing_mkt"), 
+                                      by.y = c("sym", "listing_mkt"), all.x=T, allow.cartesian = T)  %>% select(-cusip.y) %>% rename(cusip = cusip.x) %>%
+  distinct(sym, listing_mkt, cusip, date, number_of_quotes, closing_price, number_of_trades, fund.name, fund.manager, nrd.number, .keep_all = TRUE) %>% mutate(date = as.Date(date))
+  
+refinitiv <- fread('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\Tertiary Sources\\refinitiv_full.csv')   %>%
+   select('Instrument', 'Date', 'Price Close') %>% rename('Price.Close' = 'Price Close' )
 
-remaining.ifs.etf.w.cusips <- anti_join(ifs.etf.w.cusips, perfect.fuzzy.join.ifs.etf.w.cusips, by=c('fund.cusip','nrd.number', 'fund.name', 'fund.manager'))
+refinitiv.join.key <- join.key[,c(1:2, 6)]
 
-remaining.ifs.etf.w.cusips$fund.cusip <- gsub("[[:space:]]", "", remaining.ifs.etf.w.cusips$fund.cusip) #eliminate spaces
-map.etfs$fund.cusip <- gsub("[[:space:]]", "", map.etfs$fund.cusip)
+refinitiv.ts <- fread('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\Tertiary Sources\\refinitiv_full_ts_updated.csv')
 
-remaining.fuzzy.join.ifs.etf.w.cusips <- stringdist_inner_join(remaining.ifs.etf.w.cusips, map.etfs, by = 'fund.cusip') %>%
-  mutate(distance = 1 - RecordLinkage::levenshteinSim(fund.cusip.x, fund.cusip.y))  %>%
-  arrange(distance) 
 
-p.remaining.fuzzy.join.ifs.etf.w.cusips <- remaining.fuzzy.join.ifs.etf.w.cusips %>%  filter(distance == 0) %>% 
-  select(RIC, sym, listing_mkt, fund.cusip.y, fund.name.x, year, nrd.number, fund.manager, fund.category, fund.class, 
-         fund.type, strategy, authorized.participants, designated.broker, prime.broker, distance) %>% 
-  rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>% distinct()
+refinitiv.join.key <- merge(refinitiv.join.key, refinitiv, by.x = "RIC", by.y = 'Instrument', all.x=T,  allow.cartesian=TRUE) %>% filter(sym != 'NA') %>% mutate(date = as.Date(Date)) %>% select(-Date) %>% distinct()
 
-perfect.fuzzy.join.ifs.etf.w.cusips <- rbind(perfect.fuzzy.join.ifs.etf.w.cusips,p.remaining.fuzzy.join.ifs.etf.w.cusips) %>% distinct()
 
-#remaining.fuzzy.join.ifs.etf.w.cusips <- remaining.fuzzy.join.ifs.etf.w.cusips %>%  filter(distance != 0)
+map.refinitiv <- merge(map.join.key, refinitiv.join.key, by.x = c("sym", 'listing_mkt', 'date'), by.y = c("sym", 'listing_mkt', 'date'), all.x=T) %>% distinct() %>% 
+  rename(refinitiv.closing_price = Price.Close)
 
-map.etfs <- map.etfs %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                   by=c("RIC", "sym", "listing_mkt", "fund.cusip"))
+refinitiv.ts <- merge(refinitiv.ts, join.key[,c(1:2, 6)], by.x = c('Instrument'), by.y = c('RIC'), all.x=T, allow.cartesian=TRUE) %>% distinct() %>% select(-Instrument)
 
-ifs.etf <- read.csv(file1) %>% filter(grepl('etf|mutual|money', fund.type, 
-                                            ignore.case = T)) %>% 
-  filter(!grepl('no etf', designated.broker, ignore.case = T)) %>% distinct() %>% group_by(year,nrd.number,fund.name, fund.manager) %>% mutate(fund.cusip = na.locf(fund.cusip,  na.rm = FALSE)) %>% 
-  ungroup()
 
+map.refinitiv <- merge(map.refinitiv, refinitiv.ts, by.x = c("sym", 'listing_mkt', 'date'), by.y = c("sym", 'listing_mkt', 'Date'), all.x=T) %>% distinct() %>%  rename(RIC = RIC.x) %>% select(-RIC.y)
 
-ifs.etf.w.cusips <- ifs.etf %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                          by=c('fund.cusip','nrd.number', 'fund.name', 'fund.manager'))
 
-ifs.etf.w.cusips <- ifs.etf.w.cusips %>% drop_na(fund.cusip) %>% mutate(fund.cusip = strsplit(as.character(fund.cusip), ",")) %>% unnest(fund.cusip) %>% distinct() 
+# map.refinitiv <- map.refinitiv %>% ungroup() %>% mutate(diff.price = abs(Price.Close - closing_price)/closing_price) %>% group_by(sym, listing_mkt, date, cusip, number_of_trades, number_of_quotes, avg_lag_bw_trade_and_NBBO_quote)  %>% slice(which.min(diff.price)) %>% select(-diff.price) %>% ungroup()
 
-ifs.etf.w.cusips$fund.cusip <- gsub("[[:space:]]", "", ifs.etf.w.cusips$fund.cusip) 
+# #map.refinitiv <- map.refinitiv[,c(1:4,35,62:70,73:80, 82, 83, 84, 86:91)] %>% rename(refinitiv.date = date, refinitiv.closing_price = Price.Close, 
+#                                           refinitiv.volume = Volume, refinitiv.company.common.name = Company.Common.Name, 
+#                                           refinitiv.fund.type = Fund.Type, refinitiv.fund.type1 = Fund.Type.1,  refinitiv.fund.company = Fund.Company,
+#                                           refinitiv.fund.city = Fund.City, refinitiv.fund.country = Fund.County, refinitiv.fund.perid = Fund.PermID,
+#                                           refinitiv.Net.Asset.Value.Per.Share...Actual = Net.Asset.Value.Per.Share...Actual, refinitiv.Share.Class = Share.Class,
+#                                           refinitiv.Classification.Sector.Name = Classification.Sector.Name,
+#                                           refinitiv.Price...NAV...Actual = Price...NAV...Actual, refinitiv.Instrument.Shares = Instrument.Shares,
+#                                           refinitiv.Company.Market.Capitalization.Local.Currency = Company.Market.Capitalization.Local.Currency, refinitiv.INSTRUMENTMARKETCAPITALIZATIONLOCALCURN = INSTRUMENTMARKETCAPITALIZATIONLOCALCURN,
+#                                           refinitiv.Issue.Default.Shares.Outstanding = Issue.Default.Shares.Outstanding, refinitiv.Number.of.Shares = Number.of.Shares,
+#                                           refinitiv.Total.Number.of.Shares = Total.Number.of.Shares)
 
-fuzzy.join.ifs.etf.w.cusips <- stringdist_inner_join(ifs.etf.w.cusips, map.etfs, by = 'fund.cusip') %>%
-  mutate(distance = 1 - RecordLinkage::levenshteinSim(fund.cusip.x, fund.cusip.y))  %>%
-  arrange(distance) %>%  filter(distance == 0) %>% select(RIC, sym, listing_mkt, fund.cusip.y, fund.name.x, year, nrd.number, fund.manager, fund.category, fund.class, fund.type, strategy, authorized.participants, designated.broker, prime.broker, distance) %>% rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>% distinct()
 
-perfect.fuzzy.join.ifs.etf.w.cusips <- rbind(perfect.fuzzy.join.ifs.etf.w.cusips,fuzzy.join.ifs.etf.w.cusips) %>% distinct()
-
-map.etfs <- map.etfs %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                   by=c("RIC", "sym", "listing_mkt", "fund.cusip"))
-manual.input.ifs.cusips <- read.csv(file3)
-
-manual.input.ifs.cusips$fund.cusip <- gsub("[[:space:]]", "", manual.input.ifs.cusips$fund.cusip) 
-
-fuzzy.join.ifs.etf.w.cusips <- stringdist_inner_join(manual.input.ifs.cusips, map.etfs, by = 'fund.cusip') %>%
-  mutate(distance = 1 - RecordLinkage::levenshteinSim(fund.cusip.x, fund.cusip.y))  %>%
-  arrange(distance) %>%  filter(distance == 0) %>% distinct() %>% rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>% select(RIC, sym, listing_mkt, fund.cusip, fund.name, distance)
-
-fuzzy.join.ifs.etf.w.cusips <-merge(x=fuzzy.join.ifs.etf.w.cusips,y=ifs.etf, 
-                                    by = 'fund.name') %>% select(RIC, sym, listing_mkt, fund.cusip.x, fund.name, year, nrd.number, fund.manager, fund.category, fund.class, fund.type, strategy, authorized.participants, designated.broker, prime.broker, distance) %>% rename(fund.cusip = fund.cusip.x) %>% filter(distance == 0)  %>% distinct()
-
-perfect.fuzzy.join.ifs.etf.w.cusips  <- rbind(perfect.fuzzy.join.ifs.etf.w.cusips,fuzzy.join.ifs.etf.w.cusips) %>% distinct()
-
-map.etfs <- map.etfs %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                   by=c("RIC", "sym", "listing_mkt", "fund.cusip"))
-
-
-#length(unique(perfect.fuzzy.join.ifs.etf.w.cusips$fund.name))
-
-ifs.etf <- read.csv(file1) %>% filter(grepl('etf|mutual|money', fund.type, 
-                                            ignore.case = T)) %>% filter(!grepl('no etf', designated.broker, ignore.case = T)) %>% distinct()
-
-ifs.etf <- ifs.etf %>% anti_join(perfect.fuzzy.join.ifs.etf.w.cusips, 
-                                 by=c('fund.cusip','nrd.number', 'fund.name', 'fund.manager'))
-
-ifs.etf$fund.name <- toupper(ifs.etf$fund.name )
-
-fuzzy.join.ifs.etf.by.name <- stringdist_inner_join(ifs.etf, map.etfs, by = 'fund.name') %>%
-  mutate(distance = 1 - RecordLinkage::levenshteinSim(fund.name.x, fund.name.y))  %>%
-  arrange(distance) %>% select(RIC, sym, listing_mkt, fund.cusip.y, fund.name.x, year, nrd.number, fund.manager, fund.category, fund.class, fund.type, strategy, authorized.participants, designated.broker, prime.broker, distance) %>% rename(fund.cusip = fund.cusip.y, fund.name = fund.name.x) %>% filter(distance == 0) %>% distinct()
-
-map.etfs <- map.etfs %>% anti_join(fuzzy.join.ifs.etf.by.name, 
-                                   by=c("RIC", "sym", "listing_mkt", "fund.cusip"))
-
-perfect.fuzzy.join.ifs.etf.w.cusips.n.names <- rbind(perfect.fuzzy.join.ifs.etf.w.cusips,fuzzy.join.ifs.etf.by.name) %>% distinct()
-
-
-
-perfect.fuzzy.join.ifs.etf.w.cusips.n.names['number_of_ap'] <-  lengths(regmatches(perfect.fuzzy.join.ifs.etf.w.cusips.n.names$authorized.participants, gregexpr(",", perfect.fuzzy.join.ifs.etf.w.cusips.n.names$authorized.participants))) + 1 + lengths(regmatches(perfect.fuzzy.join.ifs.etf.w.cusips.n.names$authorized.participants, gregexpr(" and ", perfect.fuzzy.join.ifs.etf.w.cusips.n.names$authorized.participants)))
-
-file4 <- 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\map.csv'
-
-map <- read.csv(file4) %>% group_by(sym, listing_mkt, date) %>% distinct()
-
-map.ifs <- merge(map, perfect.fuzzy.join.ifs.etf.w.cusips.n.names, by.x = c('sym', 'listing_mkt') , by.y = c('sym', 'listing_mkt'), all.x=T) %>% select(-year.y) 
-
-#df_ref_map_ifs <- merge(x=df_ref_map_ifs, y=raw_ifs,  by.x=c("Fund.Name", 'year', "Fund.Type"), by.y =c("fund.name", 'year', 'fund.type'))
-
-map.ifs <- map.ifs  %>%  group_by(sym, listing_mkt, date) %>% distinct(sym, listing_mkt, date, number_of_quotes, number_of_trades, .keep_all = TRUE) %>% mutate(year = format(as.Date(date, format="%Y-%m-%d"),"%Y"))
-
-ifs.etf <- read.csv(file1) %>% filter(grepl('etf|mutual|money', fund.type, 
-                                            ignore.case = T)) %>% filter(!grepl('no etf', designated.broker, ignore.case = T)) %>% distinct() 
-
-map.ifs <- map.ifs %>% rename(map.year = year.x, map.closing_price = closing_price, map.number_of_trades = number_of_trades, ifs.year = year) 
-
-#map.ifs.final <- merge(map.ifs, ifs.etf, by.x = c('nrd.number', 'fund.name', 'fund.manager', 'authorized.participants'), by.y = c('nrd.number', 'fund.name', 'fund.manager', 'authorized.participants')) %>% filter(map.year != 2019)
-
-#map.ifs.final.tableau <- map.ifs.final[c(5:41, 1:4, 42:52, 67)] %>% ungroup() %>% group_by(sym, listing_mkt, cusip, date, number_of_quotes, closing_price, number_of_trades, fund.name, fund.manager, nrd.number) %>% distinct(sym, listing_mkt, cusip, date, number_of_quotes, closing_price, number_of_trades, fund.name, fund.manager, nrd.number, .keep_all = TRUE) %>% rename(fund.cusip = fund.cusip.x, fund.category = fund.category.x,  fund.class = fund.class.x,  fund.type =  fund.type.x, strategy = strategy.x, designated.broker = designated.broker.x, prime.broker = prime.broker.x)
-
-
-map.ifs <- map.ifs %>% ungroup() %>% distinct(sym, listing_mkt, cusip, date, number_of_quotes, map.closing_price, map.number_of_trades, fund.name, fund.manager, nrd.number, number_of_ap, .keep_all = TRUE) 
-
-
-### check if number of ap change by year, also check for consistency between fund.names going back
-
-
-#map.ifs <- read.csv("T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\map+ifs.csv") %>% 
-
-#map.ifs.final.tableau
-
-#map.refinitiv <-  read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\map+refinitiv.csv')
-
-refinitiv <- read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\Tertiary Sources\\refinitiv_full.csv') 
-
-
-refinitiv_list <- read.csv('C:\\Users\\MjaenCortes\\Desktop\\ETF Data\\etfs_new.csv') %>% filter(listing_mkt != 'NA')
-
-tta.list <- read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\TTa\\DS_WS_list_etf_ca.csv') %>% select(-X) %>% mutate(Start.Date = as.Date(Start.Date)) %>% filter(Start.Date <= as.Date('2023-01-01'))
-
-tta.list.delete <- read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\TTa\\DS_WS_list_etf_ca.csv') %>% select(-X) %>% mutate(Start.Date = as.Date(Start.Date)) %>% filter(Start.Date > as.Date('2022-12-31'))
-
-refinitiv_list <- merge(refinitiv_list, tta.list, by.x = "RIC.new", by.y = 'RIC', all.x=T)
-
-refinitiv.merged <- merge(refinitiv, refinitiv_list, by.x = "Instrument", by.y = 'B', all.x=T) %>% filter(sym != 'NA') %>% mutate(Date = as.Date(Date))
-
-refinitiv.merged.trouble.ric <- refinitiv.merged %>% distinct(sym, listing_mkt, Instrument) %>% group_by(Instrument) %>% filter(n() > 1) %>% filter(sym %in% c("HAU","HAU.U","HBG.U","HBG","HFMU","HFMU.U","HFY.U", "HFY" ,"HYBR","HFP","DWG","MOM"))
-
-
-map <-  read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\map.csv') %>% group_by(sym, listing_mkt, date) %>% distinct() %>%  ungroup() %>% mutate(date = as.Date(date))
-
-map.refinitiv <- merge(map, refinitiv.merged, by.x = c("sym", 'listing_mkt', 'date'), by.y = c("sym", 'listing_mkt', 'Date'), all.x=T)
-
-map.refinitiv <- map.refinitiv %>% ungroup() %>% mutate(diff.price = abs(Price.Close - closing_price)/closing_price) %>% group_by(sym, listing_mkt, date, cusip, number_of_trades, number_of_quotes, avg_lag_bw_trade_and_NBBO_quote)  %>% slice(which.min(diff.price)) %>% select(-diff.price) %>% ungroup()
-
-map.refinitiv <- map.refinitiv %>% rename(refinitiv.date = date, refinitiv.closing_price = Price.Close, refinitiv.Net.Asset.Value = Net.Asset.Value, refinitiv.NAV = NAV, 
-                                          refinitiv.volume = Volume, refinitiv.market.cap = Company.Market.Cap, refinitiv.issue.market.cap = Issue.Market.Cap, 
-                                          refinitiv.outstanding.shares = Outstanding.Shares, refinitiv.company.shares = Company.Shares,  refinitiv.company.common.name = Company.Common.Name, 
-                                          refinitiv.fund.cusip = fund.cusip, refinitiv.ric = Instrument, refinitiv.cusip = CUSIP, refinitiv.fund.name = Fund.Name,
-                                          refinitiv.fund.type = Fund.Type, refinitiv.fund.type1 = Fund.Type.1,  refinitiv.fund.company = Fund.Company,
-                                          refinitiv.fund.city = Fund.City, refinitiv.fund.country = Fund.County, refinitiv.fund.perid = Fund.PermID,
-                                          refinitiv.Net.Asset.Value.Per.Share...Actual = Net.Asset.Value.Per.Share...Actual, refinitiv.Share.Class = Share.Class,
-                                          refinitiv.Launch.Date = Launch.Date, refinitiv.Domicile = Domicile.x, refinitiv.Classification.Sector.Name = Classification.Sector.Name,
-                                          refinitiv.Price...NAV...Actual = Price...NAV...Actual, refinitiv.Company.Shares.1 = Company.Shares.1, refinitiv.Instrument.Shares = Instrument.Shares,
-                                          refinitiv.Company.Market.Capitalization.Local.Currency = Company.Market.Capitalization.Local.Currency, refinitiv.INSTRUMENTMARKETCAPITALIZATIONLOCALCURN = INSTRUMENTMARKETCAPITALIZATIONLOCALCURN,
-                                          refinitiv.Issue.Default.Shares.Outstanding = Issue.Default.Shares.Outstanding, refinitiv.Number.of.Shares = Number.of.Shares,
-                                          refinitiv.Total.Number.of.Shares = Total.Number.of.Shares, refinitiv.Name_DS = Name_DS, refinitiv.Start.Date = Start.Date,
-                                          refinitiv.Currency = Currency, refinitiv.Full.Name = Full.Name, refinitiv.Activity = Activity, refinitiv.Name_WS = Name_WS,
-                                          refinitiv.ISIN = ISIN)  %>% select(-RIC.new, -RIC.old, -fund.name.new, -fund.name.old, -Symbol, -Domicile.y, -Exchange_Symbol, -Exchange, -Hist.)
-
-map.refinitiv$refinitiv.closing_price   <- as.numeric(as.character(map.refinitiv$refinitiv.closing_price)) 
-
-map.refinitiv.check <- map.refinitiv %>% group_by(sym, listing_mkt)  %>% drop_na(refinitiv.closing_price) %>%
-  select(sym, listing_mkt, closing_price, refinitiv.closing_price) %>% summarise(refinitiv.closing_price = mean(refinitiv.closing_price), closing_price = mean(closing_price)) %>% 
-    mutate(error = 100* (abs(refinitiv.closing_price - closing_price)/closing_price)) %>% filter(error > 1)  %>% select(sym, listing_mkt, error)
+map.refinitiv.check <- map.refinitiv %>% group_by(sym, listing_mkt, RIC)  %>% drop_na(refinitiv.closing_price) %>% 
+  select(sym, listing_mkt, RIC, date, closing_price, refinitiv.closing_price) %>% mutate(date = as.Date(date))%>% filter(date < as.Date(	
+    '2021-12-10'))  %>% summarise(refinitiv.closing_price = mean(refinitiv.closing_price), closing_price = mean(closing_price)) %>% 
+  mutate(error = 100* (abs(refinitiv.closing_price - closing_price)/closing_price)) %>% filter(error > 1)  %>% select(sym, listing_mkt, RIC, error)
 
 map.refinitiv <- map.refinitiv %>% anti_join(map.refinitiv.check, by=c("sym", "listing_mkt")) 
 
-map.ifs.refinitiv <- merge(map.ifs, map.refinitiv[c(1:4, 38:84)], by.x = c('sym', 'listing_mkt', 'date', 'cusip'), by.y = c('sym', 'listing_mkt', 'refinitiv.date', 'cusip'), all.x=T) 
+#map.refinitiv <- map.refinitiv %>% select(-closing_price, -cusip)
+map.refinitiv <- merge(map.join.key, map.refinitiv[,c(1:3,93:95)],  by.x = c("sym", 'listing_mkt', 'date'), by.y = c("sym", 'listing_mkt', 'date'), all.x=T)
 
 
-#check <- map.ifs.refinitiv.final %>% mutate(year = format(as.Date(date, format="%Y-%m-%d"),"%Y")) %>%filter(year == 2022)  %>% ungroup() %>% distinct(sym, listing_mkt)
 
-bloomberg <- read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\Tertiary Sources\\bloomberg_data.csv') %>% group_by(X, Dates) %>% select(-X.NAME.) %>% rename(sym = X, variable = Dates) %>% distinct()
+ifs <- fread(ifs.file)
+map.refinitiv$year <- as.character(map.refinitiv$year)
+ifs$year <- as.character(ifs$year)
+map.refinitiv.ifs <- merge(map.refinitiv, ifs, by.x = c("nrd.number", "fund.manager", "fund.name", "year"), 
+                     by.y = c("nrd.number", "fund.manager", "fund.name", "year"), all.x=T)
 
-library(dplyr)
-library(tidyr)
+ifs$authorized.participants <-  gsub("and ",",",ifs$authorized.participants)
+ifs$authorized.participants <-  gsub("; ",",",ifs$authorized.participants)
+ifs$authorized.participants <-  gsub("AND ",",",ifs$authorized.participants)
+ifs <- ifs %>% filter(!authorized.participants %in% c("", "No", "0", "No ETF Series" , "not applicable", "No ETF series", "none", "Not applicable") )
+
+map.refinitiv.ifs.join <- map.refinitiv.ifs %>% distinct(sym, listing_mkt, year, authorized.participants, allocation.methodology, daily.disclosure) %>% group_by(sym, listing_mkt) %>%
+  fill(authorized.participants, .direction = "downup") %>%
+  fill(authorized.participants, .direction = "updown") %>%
+  fill(allocation.methodology, .direction = "downup") %>%
+  fill(allocation.methodology, .direction = "updown") %>%
+  fill(daily.disclosure, .direction = "downup") %>%
+  fill(daily.disclosure, .direction = "updown")
+map.refinitiv.ifs.join['number_of_ap'] <-  lengths(regmatches(map.refinitiv.ifs.join$authorized.participants, gregexpr(",", map.refinitiv.ifs.join$authorized.participants))) + 1 + lengths(regmatches(map.refinitiv.ifs.join$authorized.participants, gregexpr(" and ", map.refinitiv.ifs.join$authorized.participants)))
+
+map.refinitiv.ifs <- merge(map.refinitiv.ifs, map.refinitiv.ifs.join,  by.x = c("sym", 'listing_mkt', 'year'), by.y = c("sym", 'listing_mkt', 'year'), all.x=T, allow.cartesian = TRUE)
+map.refinitiv.ifs <- map.refinitiv.ifs %>% select(-allocation.methodology.x, -daily.disclosure.x, -authorized.participants.x) %>% 
+  rename(authorized.participants = authorized.participants.y, allocation.methodology = allocation.methodology.y, daily.disclosure = daily.disclosure.y) 
+
+#calculations <- map.refinitiv.ifs
+#map.refinitiv.ifs <- map.refinitiv.ifs[,c(1:20, 25:28, 39:47, 52, 62,64:57,67,68:72,78:81,84, 102:132,  225:227)] 
+
+bloomberg <- read.csv('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\Tertiary Sources\\bloomberg_data.csv') %>% group_by(X, Dates) %>% dplyr::select(-X.NAME.) %>% rename(sym = X, variable = Dates) %>% distinct()
 
 
+ 
 bloomberg.longer <-pivot_longer(bloomberg, cols=c(-1,-2), names_to = c("date")) %>% filter(value != "#N/A N/A") 
-
+# 
 bloomberg.longer$date  <- str_remove(bloomberg.longer$date, 'X')  
 bloomberg.longer$date  <- as.Date(bloomberg.longer$date,format="%Y.%m.%d")  
-
+# 
 bloomberg.longer$sym <- gsub( " .*$", "", bloomberg.longer$sym) #1190
-
-###
+# 
+# ###
 bloomberg.longer.sym <- bloomberg.longer %>% ungroup() %>%  distinct(sym)
-securities <- map.ifs.refinitiv %>% distinct(sym, listing_mkt)
-
+securities <- map %>% distinct(sym, listing_mkt)
+# 
 fuzzy.join.test <- stringdist_inner_join(securities, bloomberg.longer.sym, by = 'sym') %>%
   mutate(distance = 1 - RecordLinkage::levenshteinSim(sym.x, sym.y))
-
-fuzzy.join.test.p <- fuzzy.join.test %>% filter(distance == 0)
-
-fuzzy.join.test <- fuzzy.join.test  %>% anti_join(fuzzy.join.test.p,by= c("sym.x", "listing_mkt", "sym.y")) %>% filter(!(sym.y %in% unique(fuzzy.join.test.p$sym.y))) %>% filter(distance <= 0.2000000)
-
-fuzzy.join.test.p <- rbind(fuzzy.join.test.p, fuzzy.join.test) %>% select(-distance)
-
+# 
+ fuzzy.join.test.p <- fuzzy.join.test %>% filter(distance == 0)
+# 
+ fuzzy.join.test <- fuzzy.join.test  %>% anti_join(fuzzy.join.test.p,by= c("sym.x", "listing_mkt", "sym.y")) %>% filter(!(sym.y %in% unique(fuzzy.join.test.p$sym.y))) %>% filter(distance <= 0.2000000)
+# 
+ fuzzy.join.test.p <- rbind(fuzzy.join.test.p, fuzzy.join.test) %>% select(-distance)
+# 
 bloomberg.longer <- merge(bloomberg.longer, fuzzy.join.test.p, by.x = c('sym'), by.y = c('sym.y')) %>% rename(sym.bloomberg = sym ,sym = sym.x) %>% select(sym, listing_mkt, date, variable, value) %>% pivot_wider(names_from = variable, values_from = value)
-
-
-bloomberg.longer <- bloomberg.longer %>% rename(bloomberg.closing_price = PX_LAST, bloomberg.NAV = FUND_NET_ASSET_VAL, 
-                                          bloomberg.volume = PX_VOLUME, bloomberg.market.cap = CUR_MKT_CAP, bloomberg.nav.per.share = BS_NET_ASSET_VALUE_PER_SHARE, 
-                                          bloomberg.outstanding.shares = BS_SH_OUT, bloomberg.hist.market.cap = HISTORICAL_MARKET_CAP, bloomberg.num.trades = NUM_TRADES)
-
-unique(bloomberg.longer$date) %in% unique(map.ifs.refinitiv$date)
-
-bloomberg.longer$bloomberg.closing_price   <- as.numeric(as.character(bloomberg.longer$bloomberg.closing_price)) 
-bloomberg.longer$bloomberg.NAV   <- as.numeric(as.character(bloomberg.longer$bloomberg.NAV)) 
-bloomberg.longer$bloomberg.volume   <- as.numeric(as.character(bloomberg.longer$bloomberg.volume)) 
-bloomberg.longer$bloomberg.market.cap   <- as.numeric(as.character(bloomberg.longer$bloomberg.market.cap)) 
-
-
-bloomberg.longer$bloomberg.num.trades   <- as.numeric(as.character(bloomberg.longer$bloomberg.num.trades)) 
-bloomberg.longer$bloomberg.nav.per.share   <- as.numeric(as.character(bloomberg.longer$bloomberg.nav.per.share)) 
+# 
+# 
+ bloomberg.longer <- bloomberg.longer %>% rename(bloomberg.closing_price = PX_LAST, bloomberg.NAV = FUND_NET_ASSET_VAL, 
+                                                bloomberg.volume = PX_VOLUME, bloomberg.market.cap = CUR_MKT_CAP, bloomberg.nav.per.share = BS_NET_ASSET_VALUE_PER_SHARE, 
+                                                 bloomberg.outstanding.shares = BS_SH_OUT, bloomberg.hist.market.cap = HISTORICAL_MARKET_CAP, bloomberg.num.trades = NUM_TRADES)
+# 
+ bloomberg.longer$bloomberg.closing_price   <- as.numeric(as.character(bloomberg.longer$bloomberg.closing_price)) 
+ bloomberg.longer$bloomberg.NAV   <- as.numeric(as.character(bloomberg.longer$bloomberg.NAV)) 
+ bloomberg.longer$bloomberg.volume   <- as.numeric(as.character(bloomberg.longer$bloomberg.volume)) 
+ bloomberg.longer$bloomberg.market.cap   <- as.numeric(as.character(bloomberg.longer$bloomberg.market.cap)) 
+# 
+# 
+ bloomberg.longer$bloomberg.num.trades   <- as.numeric(as.character(bloomberg.longer$bloomberg.num.trades)) 
+ bloomberg.longer$bloomberg.nav.per.share   <- as.numeric(as.character(bloomberg.longer$bloomberg.nav.per.share)) 
 bloomberg.longer$bloomberg.hist.market.cap   <- as.numeric(as.character(bloomberg.longer$bloomberg.hist.market.cap)) 
 bloomberg.longer$bloomberg.outstanding.shares   <- as.numeric(as.character(bloomberg.longer$bloomberg.outstanding.shares))
-
-map.ifs.refinitiv.bloomberg <- merge(map.ifs.refinitiv, bloomberg.longer, by = c('sym', 'listing_mkt', 'date'), all.x=T)
-
+# 
 bloomberg.longer$date  <- as.Date(bloomberg.longer$date) 
-map.ifs.refinitiv$date  <- as.Date(map.ifs.refinitiv$date) 
+map$date  <- as.Date(map$date) 
+# 
+map.bloomberg <- merge(map, bloomberg.longer, by = c('sym', 'listing_mkt', 'date'))
+# 
+map.bloomberg.check <- map.bloomberg %>% group_by(sym, listing_mkt)  %>% drop_na(bloomberg.closing_price) %>%
+   select(sym, listing_mkt, closing_price, bloomberg.closing_price) %>% summarise(bloomberg.closing_price = mean(bloomberg.closing_price), closing_price = mean(closing_price)) %>% 
+   mutate(error = 100* (abs(bloomberg.closing_price - closing_price)/closing_price)) %>% filter(error > 1)  %>% select(sym, listing_mkt, error)
 
-map.ifs.refinitiv.bloomberg <- merge(map.ifs.refinitiv, bloomberg.longer, by = c('sym', 'listing_mkt', 'date'), all.x=T)
+map.bloomberg <- map.bloomberg %>% anti_join(map.bloomberg.check, by=c("sym", "listing_mkt")) 
 
-map.ifs.refinitiv.bloomberg <- map.ifs.refinitiv.bloomberg %>% ungroup() %>% group_by(sym, listing_mkt, date) %>% select(-distance) 
+#map.bloomberg <- map.bloomberg[,c(1:3,39:46)] 
 
-write.csv(map.ifs.refinitiv.bloomberg, 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\full_dataset1.csv', row.names = FALSE)
+#map.refinitiv.ifs <- map.refinitiv.ifs %>% select(-c("Base Currency" ))
+#map.refinitiv.ifs.bloomberg <- merge(map.refinitiv.ifs, map.bloomberg[,c(1:3,52,54)],  by.x = c("sym", 'listing_mkt', 'date'), by.y = c("sym", 'listing_mkt', 'date'), all.x=T)
 
-map.ifs.refinitiv.final <- map.ifs.refinitiv.final %>% anti_join(map.ifs.refinitiv.check, by=c("sym", "listing_mkt"))
+map.refinitiv.ifs <-  map.refinitiv.ifs.bloomberg %>% filter(!(sym %in% c("BKCC","QQCC","CNCC","BBIG.U", "CGRN.U", "CHPS.U", "DAMG.U", "DANC.U", "EPCA.U", "EPGC.U", "EPZA.U", "FCGB.U", "FCIG.U", "FCIQ.U", "FCUL.U", "FCUQ.U", "FETH.U", "FLX.B", 
+                                                                                    "HESG",   "HUM.U",  "HYLD.U", "SBT.U",  "TUED.U", "USCC.U", "XFS.U",  "ZPR.U",
+                                                                                    "HISU.U", "RBOT.U", "HXDM.U", "HXT.U",  "DLR.U",  "ZUS.V",  "HTB.U",  "BPRF.U", "LIFE.U", "ZUP.U",  "ZSML.U", 
+                                                                                    "ZMID.U", "CALL.U", "FCRR.U", "BITI.U", "BTCQ.U", "FCUD.U", "ETHQ.U", "FBTC.U", "FCUV.U", "FCMO.U", "ETHY.U"))) #Issue with NAV
 
-year <- map.ifs.refinitiv.bloomberg %>% filter(map.year == 2020) %>% ungroup() %>% distinct(sym, listing_mkt) #760 (Bloomberg)
-year <- map.ifs.refinitiv.bloomberg %>% filter(map.year == 2021) %>% ungroup() %>% distinct(sym, listing_mkt) #845 (Bloomberg)
-year <- map.ifs.refinitiv.bloomberg %>% filter(year == 2022) %>% ungroup() %>% distinct(sym, listing_mkt) #890 (Bloomberg)
+tableau <- map.refinitiv.ifs %>% distinct(sym, listing_mkt, year, fund.type) %>% group_by(sym, listing_mkt) %>%
+  fill(fund.type, .direction = "downup") %>%
+  fill(fund.type, .direction = "updown")
 
-year <- bloomberg.refinitiv.manual.concat %>% filter(year == 2022) %>% ungroup() %>% distinct(sym, listing_mkt) 
+
+map.refinitiv.ifs <- merge(map.refinitiv.ifs, tableau,  by.x = c("sym", 'listing_mkt', 'year'), by.y = c("sym", 'listing_mkt', 'year'), all.x=T, allow.cartesian = TRUE) %>%distinct()
+map.refinitiv.ifs <- map.refinitiv.ifs %>% select(-fund.type.x) %>% 
+  rename(fund.type = fund.type.y) 
+
+
+
+map.refinitiv.ifs <- map.refinitiv.ifs %>% mutate(fund.type = ifelse(fund.type %in% c("Alternative mutual fund", 'ETF, alternative mutual fund', 'Mutual fund', "Money market") &  !fund.type %in% c("NA"), "Not", 
+                                                                     ifelse(fund.type %in% c("ETF"),"ETF", "Null")))
+
+map.refinitiv.ifs <- map.refinitiv.ifs[,-c(95:246)] 
+broker.trades <- fread('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\broker.trades.csv')
+
+broker.trades <- broker.trades %>% select(-po) %>%  group_by(sym, listing_mkt, date) %>%
+  pivot_wider(names_from = institution.name,
+              values_from = c(b_volume, b_total_value, b_num_trades, s_volume, s_total_value, s_num_trades, s_mm, s_mm_volume, s_mm_total_value, b_mm, b_mm_volume, b_mm_total_value))
+
+#output <- merge(map.refinitiv.ifs, broker.trades, by=c('sym', 'listing_mkt', 'date'), all.x = T, allow.cartesian = T) 
+
+map.refinitiv.ifs$year <- format(as.Date(map.refinitiv.ifs$date, format="%Y-%m-%d"),"%Y")
+#output$Outstanding.Shares <- ifelse(is.na(output$Outstanding.Shares) == T & is.na(output$Issue.Market.Cap) == F, output$Issue.Market.Cap/output$closing_price, output$Outstanding.Shares)
+fwrite(map.refinitiv.ifs, 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\full.data.final.csv', row.names = FALSE)
+output <- fread('T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\full.data.final.csv')
+output.selected$year <- format(as.Date(output.selected$date, format="%Y-%m-%d"),"%Y")
+fwrite(output, 'T:\\Strategy_Operations\\Economics Analysis\\Data Sources folder mirrored on OSCER\\Research and Analysis Policy Projects\\CSA ETF Research\\MCortes\\MAP Data\\full.data.final.csv', row.names = FALSE)
