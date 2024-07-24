@@ -276,4 +276,3 @@ year <- map.ifs.refinitiv.bloomberg %>% filter(map.year == 2021) %>% ungroup() %
 year <- map.ifs.refinitiv.bloomberg %>% filter(year == 2022) %>% ungroup() %>% distinct(sym, listing_mkt) #890 (Bloomberg)
 
 year <- bloomberg.refinitiv.manual.concat %>% filter(year == 2022) %>% ungroup() %>% distinct(sym, listing_mkt) 
-
