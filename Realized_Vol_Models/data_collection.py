@@ -1,3 +1,4 @@
+
 import requests
 import pandas as pd
 import io
@@ -188,7 +189,7 @@ def fetch_economic_calendar(start_year, end_year, end_month=None):
     else:
         return pd.DataFrame()
 
-def read_online_csv(file_path):
+def read_online_csv(file_path, start_date='2014-01-01', end_date='2024-07-01'):
     """
     Read a CSV file from a website and return it as a pandas DataFrame.
     
@@ -213,6 +214,24 @@ def read_online_csv(file_path):
         
         # Convert 'Date' column to datetime
         df['Date'] = pd.to_datetime(df['Date'])
+    else:
+        df = df.rename(columns={df.columns[0]: 'Date'})
+        
+        # Convert 'Date' column to datetime
+        df['Date'] = pd.to_datetime(df['Date'])
+        
+        # Set Date as the index
+        df.set_index('Date', inplace=True)
+        
+        # Resample to daily frequency and forward fill the values
+        df = df.resample('D').ffill()
+        
+        # Reset the index to make Date a column again
+        df.reset_index(inplace=True)
+        
+        # Filter for the specified date range
+        df = df[(df['Date'] >= start_date) & (df['Date'] <= end_date)]
+        
         
         return df
 
@@ -260,7 +279,6 @@ def collect_data():
 
         # FRED data
         rgdp = process_fred_data('https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on&txtcolor=%23444444&ts=12&tts=12&width=1318&nt=0&thu=0&trc=0&show_legend=yes&show_axis_titles=yes&show_tooltip=yes&id=GDP&scale=left&cosd=1947-01-01&coed=2024-01-01&line_color=%234572a7&link_values=false&line_style=solid&mark_type=none&mw=3&lw=2&ost=-99999&oet=99999&mma=0&fml=a&fq=Quarterly&fam=avg&fgst=lin&fgsnd=2020-02-01&line_index=1&transformation=lin&vintage_date=2024-07-17&revision_date=2024-07-17&nd=1947-01-01')
-        vix = process_fred_data('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv')
         gdpnow = process_fred_data('https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on&txtcolor=%23444444&ts=12&tts=12&width=1318&nt=0&thu=0&trc=0&show_legend=yes&show_axis_titles=yes&show_tooltip=yes&id=GDPNOW&scale=left&cosd=2011-07-01&coed=2024-04-01&line_color=%234572a7&link_values=false&line_style=solid&mark_type=none&mw=3&lw=2&ost=-99999&oet=99999&mma=0&fml=a&fq=Quarterly&fam=avg&fgst=lin&fgsnd=2020-02-01&line_index=1&transformation=lin&vintage_date=2024-07-18&revision_date=2024-07-18&nd=2011-07-01')
         sp500_returns = process_fred_data('https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on&txtcolor=%23444444&ts=12&tts=12&width=1318&nt=0&thu=0&trc=0&show_legend=yes&show_axis_titles=yes&show_tooltip=yes&id=SP500&scale=left&cosd=2014-07-18&coed=2024-07-17&line_color=%234572a7&link_values=false&line_style=solid&mark_type=none&mw=3&lw=2&ost=-99999&oet=99999&mma=0&fml=a&fq=Daily%2C%20Close&fam=avg&fgst=lin&fgsnd=2020-02-01&line_index=1&transformation=lin&vintage_date=2024-07-18&revision_date=2024-07-18&nd=2014-07-18')
         cpi = process_fred_data('https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on&txtcolor=%23444444&ts=12&tts=12&width=1318&nt=0&thu=0&trc=0&show_legend=yes&show_axis_titles=yes&show_tooltip=yes&id=MEDCPIM158SFRBCLE&scale=left&cosd=1983-01-01&coed=2024-06-01&line_color=%234572a7&link_values=false&line_style=solid&mark_type=none&mw=3&lw=2&ost=-99999&oet=99999&mma=0&fml=a&fq=Monthly&fam=avg&fgst=lin&fgsnd=2020-02-01&line_index=1&transformation=lin&vintage_date=2024-07-18&revision_date=2024-07-18&nd=1983-01-01')
@@ -281,6 +299,9 @@ def collect_data():
 
         # S&P 500 constituents
         sp500_constituents = scrape_wikipedia_table("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        
+        # VIX 
+        vix = read_online_csv('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv')
 
         logger.info("Data collection completed successfully.")
 
